@@ -12,4 +12,5 @@ var lap: int = 0
 var hp: float = 0.0
 var max_hp: float = 0.0
 var speed: float = 0.0                  # perimeter units per tick
+var gold: int = 0                       # kill reward, stamped from EnemyType at spawn (M4 per-lap scaling recomputes)
 var statuses: Array = []                # Array[Status] — Status type lands in M2

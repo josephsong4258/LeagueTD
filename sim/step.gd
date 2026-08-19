@@ -46,8 +46,8 @@ static func step(world: World, commands: Array[Command], content: Content = null
 	# 8. Projectiles
 	Projectiles.run(world, events)
 	# 9. Status effects            (M2)
-	# 10. Deaths
+	# 10. Deaths                   (remove + pay kill-gold + alive_count--; M1 step 4)
 	Deaths.run(world, events)
-	# 11. Win / loss               (M1)
+	# 11. Win / loss               (reads alive_count vs alive_cap; M1 step 6)
 	world.tick += 1
 	return events

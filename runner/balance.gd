@@ -35,6 +35,7 @@ func _initialize() -> void:
 	_test_buckets()
 	_test_targeting()
 	_test_combat_loop()
+	_test_economy()
 	_test_determinism()
 	if _failures == 0:
 		print("ALL PASS")
@@ -394,6 +395,41 @@ func _test_combat_loop() -> void:
 	var last_events := Sim.step(world, no_commands)
 	_check(last_events.is_empty(), "no events once the board is clear")
 	_check(enemy_id != 0, "sanity: enemy had a real id")
+
+func _test_economy() -> void:
+	print("- economy (kill-gold payout + alive_count)")
+	# runner worth 3 gold. No units are deployed, so nothing dies on its own (they just
+	# loop the track); we kill one by hand below. One group of 3 spawns at wave_timer
+	# 0, 2, 4; the long duration keeps us in wave 1.
+	var content := ContentLoader.build(
+		{"alive_cap": 200, "starting_gold": 0},
+		{"runner": {"hp": 10, "speed": 1, "gold": 3}},
+		{"archer": {"damage": 1, "attack_speed": 1, "attack_range": 1, "projectile_speed": 1}},
+		{"wave_duration_ticks": 100, "spawn_corner": 0, "direction": 1, "waves": [
+			{"wave": 1, "groups": [{"type_id": "runner", "count": 3, "interval_ticks": 2}]}
+		]})
+	_check(content.load_errors.is_empty(),
+		"economy content loads clean" if content.load_errors.is_empty() else "errors: %s" % str(content.load_errors))
+	var world := Sim.new_world(1, content)
+	var no_commands: Array[Command] = []
+	for i in 6:
+		Sim.step(world, no_commands, content)
+	_check(world.alive_count == 3, "alive_count counts each spawn (got %d)" % world.alive_count)
+	_check(world.gold == 0, "no gold before any kill")
+	_check(world.enemies[0].gold == 3, "spawned enemy carries its kill reward from Content")
+	# Kill one: drop hp so Deaths removes it on the next tick.
+	world.enemies[0].hp = 0.0
+	var events := Sim.step(world, no_commands, content)
+	var died := 0
+	var event_reward := -1
+	for e in events:
+		if e.kind == SimEvent.Kind.ENEMY_DIED:
+			died += 1
+			event_reward = (e as EnemyDied).gold
+	_check(died == 1, "one death emitted")
+	_check(world.gold == 3, "kill pays the enemy's reward (got %d)" % world.gold)
+	_check(event_reward == 3, "death event carries the reward for the client")
+	_check(world.alive_count == 2, "alive_count decrements on death (got %d)" % world.alive_count)
 
 func _test_determinism() -> void:
 	print("- determinism")
