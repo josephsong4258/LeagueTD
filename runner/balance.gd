@@ -19,6 +19,7 @@ const Content := preload("res://sim/content.gd")
 const Sim := preload("res://sim/step.gd")
 const Buckets := preload("res://sim/systems/buckets.gd")
 const Targeting := preload("res://sim/systems/targeting.gd")
+const Bot := preload("res://runner/bot.gd")
 
 var _failures: int = 0
 
@@ -38,6 +39,7 @@ func _initialize() -> void:
 	_test_economy()
 	_test_commands()
 	_test_win_loss()
+	_test_full_game()
 	_test_determinism()
 	if _failures == 0:
 		print("ALL PASS")
@@ -591,6 +593,27 @@ func _test_win_loss() -> void:
 	# Once OVER the verdict is not re-emitted (fires exactly once).
 	var after := _game_over(Sim.step(wworld, nc, win_content))
 	_check(after == -1, "game over fires exactly once")
+
+func _test_full_game() -> void:
+	print("- headless full game (scripted bot to completion)")
+	# The real content: 6 waves totalling 140 enemies, below the 200 cap, so the only
+	# way to end is to clear the board -> the bot must actually kill things. This drives
+	# the whole tick loop end to end and is the seed of the M5 balance harness.
+	var content := ContentLoader.load_default()
+	_check(content.load_errors.is_empty(),
+		"default content loads for the full game" if content.load_errors.is_empty() else "errors: %s" % str(content.load_errors))
+	var world := Sim.new_world(20240819, content)
+	var bot := Bot.new()
+	var budget := 40000                     # ~6 waves * 3600 ticks + clear-out, with headroom
+	var ticks := 0
+	while ticks < budget and world.phase != World.Phase.OVER:
+		Sim.step(world, bot.decide(world, content), content)
+		ticks += 1
+	_check(world.phase == World.Phase.OVER, "the run reaches an outcome within %d ticks (stopped at %d)" % [budget, ticks])
+	_check(world.units_purchased > 0, "bot exercised the buy/place path")
+	print("    %s at tick %d — wave %d, gold %d, deployed %d, purchased %d" % [
+		("WIN" if world.won else "LOSS"), world.tick, world.wave,
+		world.gold, world.units.size(), world.units_purchased])
 
 func _test_determinism() -> void:
 	print("- determinism")
