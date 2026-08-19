@@ -35,6 +35,7 @@ var alive_cap: int = 200
 
 var next_entity_id: int = 1
 var phase: int = Phase.INTERMISSION
+var won: bool = false                   # meaningful once phase == OVER (win vs loss)
 var pending_choices: Array = []         # anvil or elite reward, empty when none
 
 # Entity IDs come from a monotonic counter, never object identity (§3).

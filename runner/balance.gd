@@ -37,6 +37,7 @@ func _initialize() -> void:
 	_test_combat_loop()
 	_test_economy()
 	_test_commands()
+	_test_win_loss()
 	_test_determinism()
 	if _failures == 0:
 		print("ALL PASS")
@@ -536,6 +537,60 @@ func _test_commands() -> void:
 	Sim.step(world, sell, content)
 	_check(not _unit_present(world, uid), "sold unit is gone from bench and board")
 	_check(world.gold == gold_pre_sell + refund, "sell refunds a fraction of the price paid (got +%d)" % (world.gold - gold_pre_sell))
+
+# Scan a tick's events for the game-over verdict: 1 = win, 0 = loss, -1 = none.
+func _game_over(events: Array[SimEvent]) -> int:
+	for e in events:
+		if e.kind == SimEvent.Kind.GAME_OVER:
+			return 1 if (e as GameOver).won else 0
+	return -1
+
+func _test_win_loss() -> void:
+	print("- Outcome (win / loss)")
+	# LOSS: cap of 3, one wave trickling runners one per tick. The 3rd spawn trips the
+	# alive cap before anything can be killed (no units deployed).
+	var loss_content := ContentLoader.build(
+		{"alive_cap": 3, "starting_gold": 0},
+		{"runner": {"hp": 10, "speed": 1, "gold": 1}},
+		{"archer": {"damage": 1, "attack_speed": 1, "attack_range": 1, "projectile_speed": 1}},
+		{"wave_duration_ticks": 100, "spawn_corner": 0, "direction": 1, "waves": [
+			{"wave": 1, "groups": [{"type_id": "runner", "count": 5, "interval_ticks": 1}]}
+		]})
+	_check(loss_content.load_errors.is_empty(),
+		"loss content loads clean" if loss_content.load_errors.is_empty() else "errors: %s" % str(loss_content.load_errors))
+	var lworld := Sim.new_world(1, loss_content)
+	var nc: Array[Command] = []
+	var loss_verdict := -1
+	for i in 10:
+		if lworld.phase == World.Phase.OVER:
+			break
+		loss_verdict = _game_over(Sim.step(lworld, nc, loss_content))
+	_check(loss_verdict == 0, "hitting the alive cap emits GAME_OVER(won=false)")
+	_check(lworld.phase == World.Phase.OVER and not lworld.won, "loss sets phase OVER, won=false")
+	_check(lworld.alive_count >= lworld.alive_cap, "loss fires when alive_count reaches the cap")
+
+	# WIN: a single 3-tick wave spawns one runner; we kill it, then the wave elapses and
+	# the board is clear -> victory.
+	var win_content := ContentLoader.build(
+		{"alive_cap": 200, "starting_gold": 0},
+		{"runner": {"hp": 10, "speed": 1, "gold": 1}},
+		{"archer": {"damage": 1, "attack_speed": 1, "attack_range": 1, "projectile_speed": 1}},
+		{"wave_duration_ticks": 3, "spawn_corner": 0, "direction": 1, "waves": [
+			{"wave": 1, "groups": [{"type_id": "runner", "count": 1, "interval_ticks": 1}]}
+		]})
+	var wworld := Sim.new_world(1, win_content)
+	Sim.step(wworld, nc, win_content)                       # tick 1: the runner spawns
+	_check(wworld.alive_count == 1, "win setup: one enemy on the board")
+	wworld.enemies[0].hp = 0.0                              # mark it for death
+	Sim.step(wworld, nc, win_content)                       # tick 2: it dies, wave not yet over
+	_check(wworld.phase == World.Phase.COMBAT, "not over while the final wave is still running")
+	var win_verdict := _game_over(Sim.step(wworld, nc, win_content))  # tick 3: wave ends, board clear
+	_check(win_verdict == 1, "clearing the final wave emits GAME_OVER(won=true)")
+	_check(wworld.phase == World.Phase.OVER and wworld.won, "win sets phase OVER, won=true")
+
+	# Once OVER the verdict is not re-emitted (fires exactly once).
+	var after := _game_over(Sim.step(wworld, nc, win_content))
+	_check(after == -1, "game over fires exactly once")
 
 func _test_determinism() -> void:
 	print("- determinism")
