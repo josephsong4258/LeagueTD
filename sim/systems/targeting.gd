@@ -23,7 +23,7 @@ static func run(world: World) -> void:
 				var enemy := world.enemies[idx]
 				if not _in_coverage(unit.coverage, enemy.path_pos):
 					continue
-				var progress := float(enemy.lap) * Path.PERIMETER + enemy.path_pos
+				var progress := float(enemy.lap) * Path.perimeter() + enemy.path_pos
 				if progress > best_progress:
 					best_progress = progress
 					best_id = enemy.id

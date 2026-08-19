@@ -19,12 +19,13 @@ func update_interp(enemy: Enemy, alpha: float) -> void:
 	var d1 := enemy.path_pos
 	# Unwrap across the origin so a lap boundary interpolates the short way, not
 	# halfway around the map.
-	if d0 - d1 > Path.PERIMETER * 0.5:
-		d1 += Path.PERIMETER
-	elif d1 - d0 > Path.PERIMETER * 0.5:
-		d1 -= Path.PERIMETER
+	var perim := Path.perimeter()
+	if d0 - d1 > perim * 0.5:
+		d1 += perim
+	elif d1 - d0 > perim * 0.5:
+		d1 -= perim
 	var d: float = lerpf(d0, d1, alpha)
-	position = Path.pos_to_xy(fposmod(d, Path.PERIMETER))
+	position = Path.pos_to_xy(fposmod(d, perim))
 	_hp_ratio = clampf(enemy.hp / maxf(enemy.max_hp, 0.0001), 0.0, 1.0)
 	queue_redraw()
 

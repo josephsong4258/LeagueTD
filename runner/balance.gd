@@ -28,7 +28,10 @@ func _initialize() -> void:
 	_test_nearest_pos()
 	_test_coverage_and_buckets()
 	_test_tick_and_movement()
+	_test_content_loader()
+	_test_board_grid()
 	_test_ingest_spawn()
+	_test_wave_scheduler()
 	_test_buckets()
 	_test_targeting()
 	_test_combat_loop()
@@ -51,42 +54,59 @@ func _approx(a: float, b: float, eps: float = 0.001) -> bool:
 	return absf(a - b) <= eps
 
 func _test_pos_to_xy() -> void:
-	print("- Path.pos_to_xy")
-	_check(Path.pos_to_xy(0.0).is_equal_approx(Vector2(0, 0)), "origin (top-left)")
-	_check(Path.pos_to_xy(Path.SIDE).is_equal_approx(Vector2(Path.SIDE, 0)), "top-right corner")
-	_check(Path.pos_to_xy(2.0 * Path.SIDE).is_equal_approx(Vector2(Path.SIDE, Path.SIDE)), "bottom-right corner")
-	_check(Path.pos_to_xy(3.0 * Path.SIDE).is_equal_approx(Vector2(0, Path.SIDE)), "bottom-left corner")
-	_check(Path.pos_to_xy(Path.PERIMETER).is_equal_approx(Vector2(0, 0)), "full lap wraps to origin")
-	_check(Path.pos_to_xy(Path.SIDE * 0.5).is_equal_approx(Vector2(Path.SIDE * 0.5, 0)), "mid top edge")
+	print("- Path.pos_to_xy (hexagon ring)")
+	var r := Path.circumradius()
+	var a := Path.apothem()
+	# Six equal sides of length r; vertex i sits at perimeter distance i*r. Positions
+	# carry a little accumulated-float error along the ring, so compare within 0.5px.
+	_check(_approx(Path.perimeter(), 6.0 * r, 0.5), "perimeter is six equal sides")
+	_check(Path.pos_to_xy(0.0).distance_to(Vector2(r, 0.0)) < 0.5, "origin (right vertex)")
+	_check(Path.pos_to_xy(3.0 * r).distance_to(Vector2(-r, 0.0)) < 0.5, "half a lap is the opposite vertex")
+	# The top edge runs between vertices 4 and 5; its mid-span is straight above center.
+	_check(Path.pos_to_xy(4.5 * r).distance_to(Vector2(0.0, -a)) < 0.5, "mid top edge")
+	_check(Path.pos_to_xy(Path.perimeter()).distance_to(Vector2(r, 0.0)) < 0.5, "full lap wraps to origin")
 
 func _test_nearest_pos() -> void:
 	print("- Path.nearest_pos")
-	for d: float in [0.0, 123.4, Path.SIDE + 50.0, 2.5 * Path.SIDE, 3.9 * Path.SIDE]:
+	var perim := Path.perimeter()
+	var r := Path.circumradius()
+	var a := Path.apothem()
+	for d: float in [0.0, 0.7 * r, 3.0 * r, 4.5 * r, perim * 0.5, perim * 0.9]:
 		var xy := Path.pos_to_xy(d)
 		var back := Path.nearest_pos(xy)
-		var same := _approx(fposmod(back, Path.PERIMETER), fposmod(d, Path.PERIMETER), 0.01)
+		var same := _approx(fposmod(back, perim), fposmod(d, perim), 0.5)
 		_check(same, "roundtrip d=%.1f" % d)
-	# A point outside the loop projects onto the nearest edge.
-	_check(_approx(Path.nearest_pos(Vector2(Path.SIDE * 0.5, -100.0)), Path.SIDE * 0.5, 0.01),
+	# A point above the top edge projects straight down onto its mid-span (d = 4.5r).
+	_check(_approx(Path.nearest_pos(Vector2(0.0, -a - 100.0)), 4.5 * r, 0.5),
 		"point above top edge projects straight down")
 
 func _test_coverage_and_buckets() -> void:
 	print("- Path.coverage_intervals / buckets")
+	var r := Path.circumradius()
+	var a := Path.apothem()
+	var mid := 4.5 * r                          # perimeter distance of the mid top edge
 	# Unit just inside the top edge, mid-span: a symmetric arc around its projection.
-	var center := Vector2(Path.SIDE * 0.5, 60.0)
+	var perp := 60.0
+	var center := Vector2(0.0, -a + perp)
 	var radius := 100.0
 	var intervals := Path.coverage_intervals(center, radius)
-	_check(intervals.size() == 1, "one interval on one edge")
+	_check(intervals.size() == 1, "one interval on the top edge")
 	if intervals.size() == 1:
-		var half := sqrt(radius * radius - 60.0 * 60.0)
-		_check(_approx(intervals[0].x, Path.SIDE * 0.5 - half, 0.01), "interval start")
-		_check(_approx(intervals[0].y, Path.SIDE * 0.5 + half, 0.01), "interval end")
-	# Out of reach of the track -> no coverage.
-	_check(Path.coverage_intervals(Vector2(Path.SIDE * 0.5, 400.0), 50.0).is_empty(),
+		var half := sqrt(radius * radius - perp * perp)
+		_check(_approx(intervals[0].x, mid - half, 0.5), "interval start")
+		_check(_approx(intervals[0].y, mid + half, 0.5), "interval end")
+	# Sitting at the arena center, the track is far on every side -> no coverage.
+	_check(Path.coverage_intervals(Vector2.ZERO, 50.0).is_empty(),
 		"no coverage when the track is out of range")
-	# Near a corner: arcs on two adjacent edges merge into one interval.
-	var corner := Path.coverage_intervals(Vector2(Path.SIDE - 20.0, 20.0), 120.0)
-	_check(corner.size() == 1, "adjacent edges merge across a corner")
+	# Near a vertex (here vertex 5, at d = 5r) the two edges meeting there are
+	# contiguous in perimeter space, so coverage spanning the vertex is one interval.
+	var vertex5 := Vector2(0.5 * r, -a)
+	var corner := Path.coverage_intervals(vertex5 * 0.8, 170.0)
+	var spans := false
+	for iv in corner:
+		if iv.x < 5.0 * r and iv.y > 5.0 * r:
+			spans = true
+	_check(spans, "coverage merges across a vertex into one interval")
 	# Buckets touched by the top-edge coverage are all in range.
 	var buckets := Path.buckets_for_intervals(intervals)
 	_check(buckets.size() >= 1, "coverage touches at least one bucket")
@@ -114,7 +134,7 @@ func _test_tick_and_movement() -> void:
 	_check(_approx(enemy.path_pos, 30.0), "enemy advanced speed * ticks")
 	_check(_approx(enemy.prev_path_pos, 27.0), "prev_path_pos trails by one tick")
 	var lap_before := enemy.lap
-	var steps_for_a_lap := int(ceil(Path.PERIMETER / enemy.speed)) + 1
+	var steps_for_a_lap := int(ceil(Path.perimeter() / enemy.speed)) + 1
 	for i in steps_for_a_lap:
 		Sim.step(world, no_commands)
 	_check(enemy.lap == lap_before + 1, "lap increments exactly once on wrap")
@@ -150,6 +170,74 @@ func _deploy_unit(world: World, unit_pos: Vector2, damage: float, attack_speed: 
 	world.insert_unit_sorted(unit)
 	return unit
 
+func _test_board_grid() -> void:
+	print("- BoardGrid (hex grid filling the stadium)")
+	var count := BoardGrid.tile_count()
+	print("    tile_count = %d" % count)
+	_check(count > 40 and count < 200, "reasonable tile count (%d)" % count)
+	# Every tile center sits clear of the path band (inside the stadium inset by the
+	# band half-width). point_inside is the exact stadium test the grid builds from.
+	var band := Path.TRACK_WIDTH * 0.5
+	var all_clear := true
+	for i in count:
+		if not Path.point_inside(BoardGrid.tile_center(i), band):
+			all_clear = false
+	_check(all_clear, "every tile center is inside the arena and clear of the path band")
+	# No two tile centers coincide.
+	var unique := true
+	for i in count:
+		for j in range(i + 1, count):
+			if BoardGrid.tile_center(i).distance_to(BoardGrid.tile_center(j)) < 1.0:
+				unique = false
+	_check(unique, "no duplicate tile centers")
+	# Symmetric fill: a stadium is symmetric about both axes, so every tile's mirror
+	# across the vertical axis must also be a tile.
+	var has_mirror := true
+	for i in count:
+		var c := BoardGrid.tile_center(i)
+		var mirror := Vector2(-c.x, c.y)
+		var nearest := BoardGrid.tile_center(BoardGrid.nearest_tile(mirror))
+		if nearest.distance_to(mirror) > 1.0:
+			has_mirror = false
+	_check(has_mirror, "grid is mirror-symmetric across the vertical axis")
+	# nearest_tile round-trips: a point at a tile's center returns that tile.
+	if count > 0:
+		var mid := count / 2
+		_check(BoardGrid.nearest_tile(BoardGrid.tile_center(mid)) == mid, "nearest_tile finds an exact center")
+	# Cached: two calls return the same list length.
+	_check(BoardGrid.tiles().size() == count, "tiles() is stable across calls")
+	# Hex hit-test: center is inside, the neighbouring cell's center is not.
+	_check(BoardGrid.point_in_tile(Vector2.ZERO), "hex contains its center")
+	_check(not BoardGrid.point_in_tile(Vector2(sqrt(3.0) * BoardGrid.hex_size(), 0.0)), "hex excludes the next cell's center")
+
+func _test_content_loader() -> void:
+	print("- ContentLoader (parse + validate content/*.json)")
+	var content := ContentLoader.load_default()
+	_check(content.load_errors.is_empty(),
+		"content loads clean" if content.load_errors.is_empty() else "content errors: %s" % str(content.load_errors))
+	_check(content.enemy_types.has(&"runner"), "runner enemy type present")
+	_check(content.heroes.size() == 4, "four heroes in the roster")
+	_check(content.waves.size() >= 1, "at least one wave defined")
+	var runner: EnemyType = content.get_enemy_type(&"runner")
+	_check(runner != null and runner.hp > 0.0, "runner has positive hp")
+	var hero: HeroDef = content.get_hero(&"ashe")
+	_check(hero != null and hero.attack_range > 0.0, "ashe looked up by id, has range")
+	if hero != null:
+		var stats := hero.to_statblock()
+		_check(_approx(stats.attack_range, hero.attack_range), "to_statblock carries range")
+	# Time-based waves carry a duration.
+	_check(content.waves[0].duration_ticks > 0, "wave 1 has a positive duration")
+	# Escalating price grows with purchases (§7).
+	_check(content.unit_price(0) == content.unit_base_price, "first purchase is base price")
+	_check(content.unit_price(5) > content.unit_price(0), "price escalates with purchases")
+	# Validation catches a wave referencing an unknown enemy.
+	var bad := ContentLoader.build(
+		{"alive_cap": 200, "starting_gold": 0},
+		{"runner": {"hp": 10, "speed": 1}},
+		{"archer": {"damage": 1, "attack_speed": 1, "attack_range": 1, "projectile_speed": 1}},
+		{"waves": [{"wave": 1, "groups": [{"type_id": "ghost", "count": 1, "interval_ticks": 1}]}]})
+	_check(not bad.load_errors.is_empty(), "wave referencing unknown enemy is flagged")
+
 func _test_ingest_spawn() -> void:
 	print("- Ingest.run (debug spawn command -> ENEMY_SPAWNED)")
 	var world := Sim.new_world(1, Content.new())
@@ -168,19 +256,80 @@ func _test_ingest_spawn() -> void:
 	Sim.step(world, junk)
 	_check(world.enemies.size() == before, "unhandled command kind is dropped without error")
 
+func _test_wave_scheduler() -> void:
+	print("- Spawn.run (time-based wave scheduler)")
+	# Two short waves. Wave 1: 3 runners from t=0 every 2 ticks, spawned at corner 0.
+	# Wave 2: 2 brutes from corner 1, starting delay 1, every 3 ticks. duration 10.
+	var content := ContentLoader.build(
+		{"alive_cap": 200, "starting_gold": 0},
+		{"runner": {"hp": 10, "speed": 1}, "brute": {"hp": 50, "speed": 1}},
+		{"archer": {"damage": 1, "attack_speed": 1, "attack_range": 1, "projectile_speed": 1}},
+		{"wave_duration_ticks": 10, "spawn_corner": 0, "direction": 1, "waves": [
+			{"wave": 1, "groups": [{"type_id": "runner", "count": 3, "interval_ticks": 2}]},
+			{"wave": 2, "spawn_corner": 1,
+				"groups": [{"type_id": "brute", "count": 2, "interval_ticks": 3, "delay_ticks": 1}]}
+		]})
+	_check(content.load_errors.is_empty(),
+		"scheduler content loads clean" if content.load_errors.is_empty() else "errors: %s" % str(content.load_errors))
+	var world := Sim.new_world(1, content)
+	_check(world.phase == World.Phase.COMBAT, "new_world enters COMBAT when waves exist")
+	_check(world.wave == 1, "starts on wave 1")
+	var no_commands: Array[Command] = []
+	# Wave 1 runs its 10-tick duration. runner group fires at wave_timer 0, 2, 4.
+	var wave1_spawns := 0
+	var first_spawn_pos := -1.0
+	for i in 10:
+		var events := Sim.step(world, no_commands, content)
+		for e in events:
+			if e.kind == SimEvent.Kind.ENEMY_SPAWNED:
+				wave1_spawns += 1
+				if first_spawn_pos < 0.0:
+					first_spawn_pos = (e as EnemySpawned).path_pos
+	_check(wave1_spawns == 3, "wave 1 spawns exactly `count` enemies (got %d)" % wave1_spawns)
+	_check(_approx(first_spawn_pos, 0.0), "wave 1 enemies enter at corner 0 (path_pos 0)")
+	_check(world.wave == 2, "auto-advances to wave 2 after duration_ticks")
+	_check(world.wave_timer == 0, "wave_timer resets on advance")
+	_check(world.spawn_corner == 1, "spawn_corner updates to the new wave's corner")
+	var runner_hp_ok := true
+	for enemy in world.enemies:
+		if enemy.type_id == &"runner" and enemy.max_hp != 10.0:
+			runner_hp_ok = false
+	_check(runner_hp_ok, "spawned enemies carry hp from the enemy type")
+	# Step through wave 2. brute group fires at wave_timer 1 and 4, at corner 1 (SIDE).
+	var wave2_spawns := 0
+	var brute_pos := -1.0
+	for i in 10:
+		var events := Sim.step(world, no_commands, content)
+		for e in events:
+			if e.kind == SimEvent.Kind.ENEMY_SPAWNED:
+				wave2_spawns += 1
+				if (e as EnemySpawned).type_id == &"brute":
+					brute_pos = (e as EnemySpawned).path_pos
+	_check(wave2_spawns == 2, "wave 2 spawns its `count` after a delay (got %d)" % wave2_spawns)
+	_check(_approx(brute_pos, Path.perimeter() / 4.0), "wave 2 enemies enter at corner 1 (quarter of the loop)")
+	_check(world.wave == 3, "advances past the last wave; scheduler then idles")
+	# No waves -> no auto-spawn, and the 2-arg call still type-checks (content defaults
+	# to null), so the subsystem tests that pass no content are unaffected.
+	var bare := Sim.new_world(1, Content.new())
+	for i in 5:
+		Sim.step(bare, no_commands)
+	_check(bare.enemies.is_empty() and bare.phase == World.Phase.INTERMISSION,
+		"empty content stays in INTERMISSION with no spawns")
+
 func _test_buckets() -> void:
 	print("- Buckets.rebuild")
 	var world := Sim.new_world(1, Content.new())
+	var bs := Path.bucket_size()
 	var a := _spawn_enemy(world, 10.0, 10.0)                       # bucket 0
-	var b := _spawn_enemy(world, Path.BUCKET_SIZE + 5.0, 10.0)     # bucket 1
-	var c := _spawn_enemy(world, Path.PERIMETER - 1.0, 10.0)       # last bucket
+	var b := _spawn_enemy(world, bs + 5.0, 10.0)                   # bucket 1
+	var c := _spawn_enemy(world, Path.perimeter() - 1.0, 10.0)     # last bucket
 	Buckets.rebuild(world)
 	_check(world.buckets.size() == Path.BUCKET_COUNT, "allocates BUCKET_COUNT buckets")
 	_check(Array(world.buckets[0]) == [0], "enemy a lands in bucket 0")
 	_check(Array(world.buckets[1]) == [1], "enemy b lands in bucket 1")
 	_check(Array(world.buckets[Path.BUCKET_COUNT - 1]) == [2], "enemy c lands in the last bucket")
 	# A second rebuild must clear the previous contents, not accumulate.
-	a.path_pos = Path.BUCKET_SIZE + 1.0                            # move a into bucket 1
+	a.path_pos = bs + 1.0                                          # move a into bucket 1
 	Buckets.rebuild(world)
 	_check(world.buckets[0].is_empty(), "moved-out bucket is cleared on rebuild")
 	_check(Array(world.buckets[1]) == [0, 1], "rebuild reflects new positions in array order")
@@ -188,11 +337,12 @@ func _test_buckets() -> void:
 func _test_targeting() -> void:
 	print("- Targeting.run (first / furthest-along policy)")
 	var world := Sim.new_world(1, Content.new())
+	var mid := 4.5 * Path.circumradius()                             # mid top edge
 	# Unit just inside the top edge at mid-span, range 100 -> a ~150-wide arc.
-	var unit := _deploy_unit(world, Vector2(Path.SIDE * 0.5, 60.0), 5.0, 1.0, 100.0, 400.0, 0)
-	var in_near := _spawn_enemy(world, Path.SIDE * 0.5 - 40.0, 10.0)
-	var in_far := _spawn_enemy(world, Path.SIDE * 0.5 + 40.0, 10.0)   # further along
-	var out := _spawn_enemy(world, Path.SIDE * 0.5 + 400.0, 10.0)     # out of range
+	var unit := _deploy_unit(world, Vector2(0.0, -Path.apothem() + 60.0), 5.0, 1.0, 100.0, 400.0, 0)
+	var in_near := _spawn_enemy(world, mid - 40.0, 10.0)
+	var in_far := _spawn_enemy(world, mid + 40.0, 10.0)              # further along
+	var out := _spawn_enemy(world, mid + 400.0, 10.0)               # out of range
 	Buckets.rebuild(world)
 	Targeting.run(world)
 	_check(unit.target_enemy_id == in_far.id, "targets the furthest-along enemy in range")
@@ -212,8 +362,8 @@ func _test_combat_loop() -> void:
 	var world := Sim.new_world(1, Content.new())
 	# One shot per tick (attack_speed 30 at 30 Hz), fast projectile so it hits the
 	# same tick it is fired. Enemy is stationary and takes two 5-damage hits.
-	_deploy_unit(world, Vector2(Path.SIDE * 0.5, 60.0), 5.0, 30.0, 100.0, 4000.0, 0)
-	var enemy := _spawn_enemy(world, Path.SIDE * 0.5, 10.0, 0.0)
+	_deploy_unit(world, Vector2(0.0, -Path.apothem() + 60.0), 5.0, 30.0, 100.0, 4000.0, 0)
+	var enemy := _spawn_enemy(world, 4.5 * Path.circumradius(), 10.0, 0.0)
 	var enemy_id := enemy.id
 	var no_commands: Array[Command] = []
 	var fired := 0

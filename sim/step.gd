@@ -13,15 +13,27 @@ static func new_world(seed_value: int, content: Content) -> World:
 	world.rng = Rng.make_streams(seed_value)
 	world.alive_cap = content.alive_cap
 	world.gold = content.starting_gold
+	# Kick straight into wave 1 when the content defines waves. A pre-wave build-phase
+	# intermission lands with buy/place (M1 step 5) — until commands exist it would be
+	# an empty pause. Empty content (pure-subsystem tests) stays in INTERMISSION with
+	# no auto-spawn.
+	if not content.waves.is_empty():
+		world.phase = World.Phase.COMBAT
+		world.wave = 1
+		world.wave_timer = 0
+		var first: WaveDef = content.waves[0]
+		world.spawn_corner = first.spawn_corner
+		world.direction = first.direction
 	return world
 
 # System order is part of the spec (§4). Steps land as they are built; the order
 # below is fixed so replays stay valid.
-static func step(world: World, commands: Array[Command]) -> Array[SimEvent]:
+static func step(world: World, commands: Array[Command], content: Content = null) -> Array[SimEvent]:
 	var events: Array[SimEvent] = []
 	# 1. Ingest commands           (M0: debug spawn only; economy/board in M1)
 	Ingest.run(world, commands, events)
-	# 2. Spawn                     (M1 — wave scheduler; M0 spawns via ingest above)
+	# 2. Spawn                     (time-based wave scheduler; no-ops without content)
+	Spawn.run(world, content, events)
 	# 3. Movement
 	Movement.run(world)
 	# 4. Rebuild buckets

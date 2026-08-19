@@ -12,14 +12,15 @@ extends Node2D
 const EnemyView := preload("res://game/enemies/enemy_view.gd")
 const ProjectileView := preload("res://game/projectiles/projectile_view.gd")
 const TrackView := preload("res://game/board/track_view.gd")
+const TilesView := preload("res://game/board/tiles_view.gd")
 const CoverageView := preload("res://game/board/coverage_view.gd")
 const UnitView := preload("res://game/units/unit_view.gd")
 
 const _BOARD_PADDING := 80.0
 const _SPEED_MULTIPLIER := 1          # game speed = extra step() calls, never time_scale (§9)
-const _SPAWN_INTERVAL_TICKS := 40     # M0 demo trickle; M1 wave scheduler replaces this
 
 var world: World
+var _content: Content
 var _commands: Array[Command] = []
 
 var _board: Node2D
@@ -34,14 +35,13 @@ var _projectile_views: Dictionary = {}
 var _enemy_pool: Array[Node2D] = []
 var _projectile_pool: Array[Node2D] = []
 
-var _spawn_timer: int = 0
-
 func _ready() -> void:
 	Engine.physics_ticks_per_second = 30
 	# Client-side seed; the sim's determinism is per-seed, and replays (M1/§10) will
 	# pin this. Time is fine here — this is the host, not sim/.
 	var seed_value := int(Time.get_unix_time_from_system())
-	world = Sim.new_world(seed_value, Content.new())
+	_content = ContentLoader.load_default()
+	world = Sim.new_world(seed_value, _content)
 	_build_layers()
 	_deploy_demo_unit()
 	get_viewport().size_changed.connect(_layout_board)
@@ -51,6 +51,7 @@ func _build_layers() -> void:
 	_board = Node2D.new()
 	add_child(_board)
 	_board.add_child(TrackView.new())
+	_board.add_child(TilesView.new())
 	_coverage_layer = CoverageView.new()
 	_coverage_layer.world = world
 	_board.add_child(_coverage_layer)
@@ -61,21 +62,30 @@ func _build_layers() -> void:
 	_projectile_layer = Node2D.new()
 	_board.add_child(_projectile_layer)
 
-# Fit the SIDE x SIDE sim square into the viewport with uniform scale and centering.
+# Fit the stadium (centered on the origin) into the viewport with uniform scale.
 func _layout_board() -> void:
 	var vp := get_viewport_rect().size
+	# The band overhangs the centerline ring by half its width; include it so the
+	# outer edge of the terrain isn't clipped.
+	var overhang := Path.TRACK_WIDTH * 0.5 + 24.0
+	var bounds := Path.bounds()
+	var world_size := bounds.size + Vector2(overhang, overhang) * 2.0
 	var fit_scale := minf(
-		(vp.x - 2.0 * _BOARD_PADDING) / Path.SIDE,
-		(vp.y - 2.0 * _BOARD_PADDING) / Path.SIDE)
+		(vp.x - 2.0 * _BOARD_PADDING) / world_size.x,
+		(vp.y - 2.0 * _BOARD_PADDING) / world_size.y)
 	_board.scale = Vector2(fit_scale, fit_scale)
-	_board.position = (vp - Vector2(Path.SIDE, Path.SIDE) * fit_scale) * 0.5
+	# The ring is centered on the origin, so centering the board on the viewport is
+	# just translating to the middle.
+	_board.position = vp * 0.5
 
 func _deploy_demo_unit() -> void:
 	var unit := Unit.new()
 	unit.id = world.next_id()
 	unit.hero_id = &"demo"
-	unit.tile = 0
-	unit.pos = Vector2(Path.SIDE * 0.5, 150.0)   # just inside the top edge
+	# Snap onto a real hex near the top edge so placement is visible on the grid.
+	var tile := BoardGrid.nearest_tile(Vector2(0.0, -Path.apothem() * 0.6))
+	unit.tile = tile
+	unit.pos = BoardGrid.tile_center(tile)
 	var stats := StatBlock.new()
 	stats.damage = 4.0
 	stats.attack_speed = 1.5
@@ -93,17 +103,8 @@ func _deploy_demo_unit() -> void:
 
 func _physics_process(_delta: float) -> void:
 	for _i in _SPEED_MULTIPLIER:
-		_queue_demo_spawn()
-		var events := Sim.step(world, _drain_commands())
+		var events := Sim.step(world, _drain_commands(), _content)
 		_handle_events(events)
-
-# M0 stand-in for the wave scheduler: drip a "runner" onto the track periodically
-# via the command channel, so it stays replayable and the renderer stays event-driven.
-func _queue_demo_spawn() -> void:
-	_spawn_timer += 1
-	if _spawn_timer >= _SPAWN_INTERVAL_TICKS:
-		_spawn_timer = 0
-		_commands.append(DebugSpawnEnemy.new(&"runner", 20.0, 2.5, 0.0))
 
 func _drain_commands() -> Array[Command]:
 	var out := _commands

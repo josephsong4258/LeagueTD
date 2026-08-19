@@ -11,7 +11,7 @@ static func run(world: World) -> void:
 	for enemy in world.enemies:
 		enemy.prev_path_pos = enemy.path_pos
 		var advanced := enemy.path_pos + enemy.speed * dir
-		var wrapped := fposmod(advanced, Path.PERIMETER)
+		var wrapped := fposmod(advanced, Path.perimeter())
 		if world.direction > 0 and wrapped < enemy.path_pos:
 			enemy.lap += 1
 		elif world.direction < 0 and wrapped > enemy.path_pos:
