@@ -9,6 +9,7 @@ var id: int = 0
 var hero_id: StringName = &""
 var tier: int = 1                       # 1 or 2 (combined)
 var copies: int = 1                     # 1..5
+var price_paid: int = 0                 # what this unit cost at buy; drives the sell refund
 var tile: int = -1                      # -1 = on bench
 var pos: Vector2 = Vector2.ZERO         # center in sim space; set at placement,
                                         # feeds coverage math and projectile origin

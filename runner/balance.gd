@@ -36,6 +36,7 @@ func _initialize() -> void:
 	_test_targeting()
 	_test_combat_loop()
 	_test_economy()
+	_test_commands()
 	_test_determinism()
 	if _failures == 0:
 		print("ALL PASS")
@@ -430,6 +431,111 @@ func _test_economy() -> void:
 	_check(world.gold == 3, "kill pays the enemy's reward (got %d)" % world.gold)
 	_check(event_reward == 3, "death event carries the reward for the client")
 	_check(world.alive_count == 2, "alive_count decrements on death (got %d)" % world.alive_count)
+
+func _bench_count(world: World) -> int:
+	var n := 0
+	for u in world.bench:
+		if u != null:
+			n += 1
+	return n
+
+func _first_bench_unit(world: World) -> Unit:
+	for u in world.bench:
+		if u != null:
+			return u
+	return null
+
+func _unit_present(world: World, id: int) -> bool:
+	for u in world.units:
+		if u.id == id:
+			return true
+	for u in world.bench:
+		if u != null and u.id == id:
+			return true
+	return false
+
+func _test_commands() -> void:
+	print("- Ingest economy/board commands (buy / place / move / sell)")
+	# Two-hero roster, no waves so the world stays in the INTERMISSION build phase and
+	# nothing spawns to perturb gold.
+	var content := ContentLoader.build(
+		{"alive_cap": 200, "starting_gold": 0},
+		{"runner": {"hp": 10, "speed": 1, "gold": 1}},
+		{
+			"archer": {"damage": 5, "attack_speed": 1, "attack_range": 400, "projectile_speed": 400},
+			"mage": {"damage": 8, "attack_speed": 1, "attack_range": 350, "projectile_speed": 300}
+		},
+		{"waves": []})
+	_check(content.load_errors.is_empty(),
+		"command content loads clean" if content.load_errors.is_empty() else "errors: %s" % str(content.load_errors))
+	var world := Sim.new_world(1, content)
+	_check(world.phase == World.Phase.INTERMISSION, "no waves -> stays in INTERMISSION for the build phase")
+	world.gold = 100
+
+	# BUY: rolls a random hero onto the bench and charges the base price.
+	var price0 := content.unit_price(0)
+	var buy: Array[Command] = [BuyUnit.new()]
+	Sim.step(world, buy, content)
+	_check(_bench_count(world) == 1, "buy puts one unit on the bench")
+	_check(world.gold == 100 - price0, "buy charges the escalating price (got %d)" % world.gold)
+	_check(world.units_purchased == 1, "buy increments units_purchased (drives the price curve)")
+	var bought := _first_bench_unit(world)
+	_check(bought != null and (bought.hero_id == &"archer" or bought.hero_id == &"mage"),
+		"bought a hero from the roster")
+
+	# BUY when broke: dropped, and the price curve does not advance.
+	var gold_saved := world.gold
+	world.gold = 0
+	Sim.step(world, buy, content)
+	_check(_bench_count(world) == 1, "buy with no gold is dropped")
+	_check(world.units_purchased == 1, "dropped buy does not advance the price curve")
+	world.gold = gold_saved
+
+	# PLACE: deploy the bought unit to a tile; coverage is derived from pos + range.
+	var uid := bought.id
+	var place: Array[Command] = [PlaceUnit.new(uid, 0)]
+	Sim.step(world, place, content)
+	_check(_bench_count(world) == 0, "place clears the bench slot")
+	_check(world.units.size() == 1 and world.units[0].id == uid, "placed unit is deployed")
+	_check(bought.tile == 0, "unit records its tile")
+	_check(bought.pos == BoardGrid.tile_center(0), "unit.pos is the tile center")
+	_check(bought.coverage == Path.coverage_intervals(bought.pos, bought.stats.attack_range),
+		"placement computes coverage from pos and range")
+
+	# SWAP (bench -> occupied tile): buy a second unit, drop it on the occupied tile.
+	# The occupant is pushed back to the bench (TFT drag).
+	Sim.step(world, buy, content)
+	var second := _first_bench_unit(world)
+	var swap_from_bench: Array[Command] = [PlaceUnit.new(second.id, 0)]
+	Sim.step(world, swap_from_bench, content)
+	_check(second.tile == 0 and bought.tile == -1, "bench->occupied tile swaps: second deploys, first benches")
+	_check(world.units.size() == 1 and world.units[0].id == second.id, "swap leaves exactly the occupant deployed")
+
+	# SWAP (tile <-> tile): deploy the benched unit to an empty tile, then move it onto
+	# the occupant — the two trade tiles.
+	var place_a: Array[Command] = [PlaceUnit.new(uid, 1)]
+	Sim.step(world, place_a, content)
+	_check(world.units.size() == 2, "both units deployed on separate tiles")
+	var tile_swap: Array[Command] = [MoveUnit.new(uid, 0)]
+	Sim.step(world, tile_swap, content)
+	_check(bought.tile == 0 and second.tile == 1, "tile<->tile swap trades the two tiles")
+	_check(world.units.size() == 2, "tile swap does not add or drop a unit")
+
+	# MOVE back to the bench (tile == -1).
+	var to_bench: Array[Command] = [MoveUnit.new(uid, -1)]
+	Sim.step(world, to_bench, content)
+	_check(bought.tile == -1, "move to -1 returns the unit to the bench")
+	_check(world.units.size() == 1, "moved-to-bench unit leaves the board")
+
+	# SELL: removes the unit and refunds sell_refund_ratio of the price it was bought at.
+	var refund := int(round(float(bought.price_paid) * content.sell_refund_ratio))
+	_check(bought.price_paid == price0, "unit remembers what it was bought for")
+	_check(refund == 2, "75% of the base price 3, rounded, is 2")
+	var gold_pre_sell := world.gold
+	var sell: Array[Command] = [SellUnit.new(uid)]
+	Sim.step(world, sell, content)
+	_check(not _unit_present(world, uid), "sold unit is gone from bench and board")
+	_check(world.gold == gold_pre_sell + refund, "sell refunds a fraction of the price paid (got +%d)" % (world.gold - gold_pre_sell))
 
 func _test_determinism() -> void:
 	print("- determinism")

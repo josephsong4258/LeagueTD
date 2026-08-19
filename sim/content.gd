@@ -16,6 +16,7 @@ var unit_base_price: int = 3
 var unit_price_growth: float = 0.20      # escalates per purchase, §7 says +15–25%
 var per_wave_stipend: int = 0            # stubbed
 var interest_per_10: int = 0             # stubbed
+var sell_refund_ratio: float = 0.75      # fraction of a unit's paid price returned on sell
 
 # Tables.
 var enemy_types: Dictionary = {}         # StringName -> EnemyType

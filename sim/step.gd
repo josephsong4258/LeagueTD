@@ -30,8 +30,8 @@ static func new_world(seed_value: int, content: Content) -> World:
 # below is fixed so replays stay valid.
 static func step(world: World, commands: Array[Command], content: Content = null) -> Array[SimEvent]:
 	var events: Array[SimEvent] = []
-	# 1. Ingest commands           (M0: debug spawn only; economy/board in M1)
-	Ingest.run(world, commands, events)
+	# 1. Ingest commands           (buy/place/move/sell + debug spawn; M1 step 5)
+	Ingest.run(world, commands, content, events)
 	# 2. Spawn                     (time-based wave scheduler; no-ops without content)
 	Spawn.run(world, content, events)
 	# 3. Movement
