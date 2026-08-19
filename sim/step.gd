@@ -20,16 +20,21 @@ static func new_world(seed_value: int, content: Content) -> World:
 static func step(world: World, commands: Array[Command]) -> Array[SimEvent]:
 	var events: Array[SimEvent] = []
 	# 1. Ingest commands           (M1)
-	# 2. Spawn                     (M0 — next)
+	# 2. Spawn                     (M1 — needs the enemy-type content schema)
 	# 3. Movement
 	Movement.run(world)
-	# 4. Rebuild buckets           (M0 — next)
-	# 5. Targeting                 (M0 — next)
-	# 6. Mana                      (M2)
+	# 4. Rebuild buckets
+	Buckets.rebuild(world)
+	# 5. Targeting
+	Targeting.run(world)
+	# 6. Mana / auto-attack        (mana accrual: M2; auto-attack fires now)
+	Combat.run(world, events)
 	# 7. Abilities                 (M2)
-	# 8. Projectiles               (M0 — next)
+	# 8. Projectiles
+	Projectiles.run(world, events)
 	# 9. Status effects            (M2)
-	# 10. Deaths                   (M0 — next)
+	# 10. Deaths
+	Deaths.run(world, events)
 	# 11. Win / loss               (M1)
 	world.tick += 1
 	return events

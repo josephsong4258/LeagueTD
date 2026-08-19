@@ -19,9 +19,14 @@ var spawn_corner: int = 0               # 0..3
 var direction: int = 1                  # 1 or -1
 
 var enemies: Array[Enemy] = []
-var units: Array[Unit] = []             # deployed
+var units: Array[Unit] = []             # deployed, kept in tile index order (§3)
 var bench: Array[Unit] = [null, null, null, null, null, null, null, null]
 var projectiles: Array[Projectile] = []
+
+# Transient spatial index (§6): bucket i holds the indices into `enemies` of every
+# enemy currently in that perimeter bucket. Rebuilt from scratch each tick by
+# Buckets.rebuild before targeting reads it; not part of the persisted save.
+var buckets: Array[PackedInt32Array] = []
 
 var gold: int = 0
 var units_purchased: int = 0            # drives escalating price
@@ -37,6 +42,15 @@ func next_id() -> int:
 	var id := next_entity_id
 	next_entity_id += 1
 	return id
+
+# Deployed units are kept in tile index order so per-tick systems (targeting,
+# combat) iterate deterministically (§3). Bench units (tile == -1) live in
+# `bench`, not here. Placement (M1) routes through this; M0 tests call it directly.
+func insert_unit_sorted(unit: Unit) -> void:
+	var i := 0
+	while i < units.size() and units[i].tile <= unit.tile:
+		i += 1
+	units.insert(i, unit)
 
 # TODO(M1 save/replay): clone() and JSON serialize/deserialize land with §10.
 # Not on the M0 critical path; World is designed to round-trip once we need it.
