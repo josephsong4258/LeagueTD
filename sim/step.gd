@@ -19,8 +19,9 @@ static func new_world(seed_value: int, content: Content) -> World:
 # below is fixed so replays stay valid.
 static func step(world: World, commands: Array[Command]) -> Array[SimEvent]:
 	var events: Array[SimEvent] = []
-	# 1. Ingest commands           (M1)
-	# 2. Spawn                     (M1 — needs the enemy-type content schema)
+	# 1. Ingest commands           (M0: debug spawn only; economy/board in M1)
+	Ingest.run(world, commands, events)
+	# 2. Spawn                     (M1 — wave scheduler; M0 spawns via ingest above)
 	# 3. Movement
 	Movement.run(world)
 	# 4. Rebuild buckets

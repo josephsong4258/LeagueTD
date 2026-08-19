@@ -28,6 +28,7 @@ func _initialize() -> void:
 	_test_nearest_pos()
 	_test_coverage_and_buckets()
 	_test_tick_and_movement()
+	_test_ingest_spawn()
 	_test_buckets()
 	_test_targeting()
 	_test_combat_loop()
@@ -148,6 +149,24 @@ func _deploy_unit(world: World, unit_pos: Vector2, damage: float, attack_speed: 
 	unit.buckets = Path.buckets_for_intervals(unit.coverage)
 	world.insert_unit_sorted(unit)
 	return unit
+
+func _test_ingest_spawn() -> void:
+	print("- Ingest.run (debug spawn command -> ENEMY_SPAWNED)")
+	var world := Sim.new_world(1, Content.new())
+	var commands: Array[Command] = [DebugSpawnEnemy.new(&"runner", 12.0, 2.0, 0.0)]
+	var events := Sim.step(world, commands)
+	_check(world.enemies.size() == 1, "command adds one enemy to the world")
+	_check(world.enemies[0].max_hp == 12.0, "enemy carries the commanded hp")
+	var spawned := 0
+	for event in events:
+		if event.kind == SimEvent.Kind.ENEMY_SPAWNED:
+			spawned += 1
+	_check(spawned == 1, "ENEMY_SPAWNED emitted once")
+	# An unrecognized command kind is dropped, never fatal (§4).
+	var junk: Array[Command] = [Command.new(Command.Kind.START_WAVE)]
+	var before := world.enemies.size()
+	Sim.step(world, junk)
+	_check(world.enemies.size() == before, "unhandled command kind is dropped without error")
 
 func _test_buckets() -> void:
 	print("- Buckets.rebuild")

@@ -14,6 +14,8 @@ enum Kind {
 	EQUIP_ITEM,
 	CHOOSE_REWARD,
 	START_WAVE,
+	DEBUG_SPAWN_ENEMY,   # M0 dev-only: puts an enemy on the track so the client
+	                     # loop has something to render. M1's wave scheduler replaces it.
 }
 
 var kind: int = -1
