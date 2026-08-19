@@ -15,6 +15,7 @@ const TrackView := preload("res://game/board/track_view.gd")
 const TilesView := preload("res://game/board/tiles_view.gd")
 const CoverageView := preload("res://game/board/coverage_view.gd")
 const UnitView := preload("res://game/units/unit_view.gd")
+const Hud := preload("res://game/ui/hud.gd")
 
 const _BOARD_PADDING := 80.0
 const _SPEED_MULTIPLIER := 1          # game speed = extra step() calls, never time_scale (§9)
@@ -24,6 +25,7 @@ var _content: Content
 var _commands: Array[Command] = []
 
 var _board: Node2D
+var _hud: Hud
 var _coverage_layer: CoverageView
 var _unit_layer: Node2D
 var _enemy_layer: Node2D
@@ -44,6 +46,9 @@ func _ready() -> void:
 	world = Sim.new_world(seed_value, _content)
 	_build_layers()
 	_deploy_demo_unit()
+	_hud = Hud.new()
+	_hud.world = world
+	add_child(_hud)
 	get_viewport().size_changed.connect(_layout_board)
 	_layout_board()
 
