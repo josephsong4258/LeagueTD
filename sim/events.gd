@@ -15,6 +15,9 @@ enum Kind {
 	PROJECTILE_HIT,
 	WAVE_CLEARED,
 	GAME_OVER,
+	UNIT_BOUGHT,
+	UNIT_MOVED,
+	UNIT_SOLD,
 }
 
 var kind: int = -1

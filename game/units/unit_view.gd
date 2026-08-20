@@ -1,8 +1,8 @@
 extends Node2D
 
-# A deployed unit marker (ARCHITECTURE.md §9). Units don't move once placed, so this
-# is static — position is set once from Unit.pos. The board grid, drag-to-place, and
-# real hero art land in M1/M2; this is just enough to see who is shooting.
+# A unit marker (ARCHITECTURE.md §9). One pooled instance per live unit, on the bench
+# or a board tile; main sets its position from UnitBought/UnitMoved events and moves it
+# directly while it is being dragged. The draw itself is static — real hero art is M2.
 
 const _RADIUS := 16.0
 const _COLOR := Color(0.4, 0.55, 0.95)

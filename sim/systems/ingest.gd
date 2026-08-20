@@ -7,21 +7,22 @@ extends RefCounted
 # buy, or a click on an occupied tile must be a silent no-op, not a crash.
 #
 # M1 handles the economy/board set: buy a random unit, place/move it on the grid, and
-# sell it. Equip/combine/anvil (M3) and reward choices (M4) are still dropped. Result
-# events (bought/placed/sold, and rejection feedback for the HUD) land with the client
-# wiring in M1 step 9, which owns what the UI needs to hear.
+# sell it. Equip/combine/anvil (M3) and reward choices (M4) are still dropped. Accepted
+# operations emit result events (UnitBought / UnitMoved / UnitSold) so the client can
+# drive its pooled unit views without diffing World (§4, §9); rejected commands stay
+# silent no-ops, so a rejected drag simply produces no event and the view snaps back.
 
 static func run(world: World, commands: Array[Command], content: Content, events: Array[SimEvent]) -> void:
 	for command in commands:
 		match command.kind:
 			Command.Kind.BUY_UNIT:
-				_buy_unit(world, content)
+				_buy_unit(world, content, events)
 			Command.Kind.PLACE_UNIT:
-				_relocate(world, (command as PlaceUnit).unit_id, (command as PlaceUnit).tile)
+				_relocate(world, (command as PlaceUnit).unit_id, (command as PlaceUnit).tile, events)
 			Command.Kind.MOVE_UNIT:
-				_relocate(world, (command as MoveUnit).unit_id, (command as MoveUnit).tile)
+				_relocate(world, (command as MoveUnit).unit_id, (command as MoveUnit).tile, events)
 			Command.Kind.SELL_UNIT:
-				_sell_unit(world, content, (command as SellUnit).unit_id)
+				_sell_unit(world, content, (command as SellUnit).unit_id, events)
 			Command.Kind.DEBUG_SPAWN_ENEMY:
 				_spawn_debug_enemy(world, command as DebugSpawnEnemy, events)
 			_:
@@ -33,7 +34,7 @@ static func run(world: World, commands: Array[Command], content: Content, events
 # the affordability check and the roll happen here so replaying the same command log
 # reproduces the same unit. Dropped (no-op) when the roster is empty, the player can't
 # afford it, or the bench is full.
-static func _buy_unit(world: World, content: Content) -> void:
+static func _buy_unit(world: World, content: Content, events: Array[SimEvent]) -> void:
 	if content == null or content.heroes.is_empty():
 		return
 	var price := content.unit_price(world.units_purchased)
@@ -52,17 +53,19 @@ static func _buy_unit(world: World, content: Content) -> void:
 	world.bench[slot] = unit
 	world.gold -= price
 	world.units_purchased += 1
+	events.append(UnitBought.new(unit.id, unit.hero_id, slot))
 
 # Sell: remove from wherever it sits and refund sell_refund_ratio of the unit's paid
 # price (§ economy). units_purchased is left as-is, so the price curve keeps climbing —
 # a buy/sell churn loses the refund gap each cycle instead of resetting the cost.
-static func _sell_unit(world: World, content: Content, unit_id: int) -> void:
+static func _sell_unit(world: World, content: Content, unit_id: int, events: Array[SimEvent]) -> void:
 	var unit := _find_unit(world, unit_id)
 	if unit == null:
 		return
 	_detach(world, unit)
 	var ratio := content.sell_refund_ratio if content != null else 0.0
 	world.gold += int(round(float(unit.price_paid) * ratio))
+	events.append(UnitSold.new(unit_id))
 
 # --- board ---
 
@@ -73,7 +76,7 @@ static func _sell_unit(world: World, content: Content, unit_id: int) -> void:
 # mover came off the bench — matching the TFT drag. Dropped as a silent no-op when the
 # unit is gone, the destination is out of range, or a needed bench slot is full.
 # Placement recomputes coverage/buckets from the new position (§6).
-static func _relocate(world: World, unit_id: int, dest: int) -> void:
+static func _relocate(world: World, unit_id: int, dest: int, events: Array[SimEvent]) -> void:
 	var unit := _find_unit(world, unit_id)
 	if unit == null:
 		return
@@ -83,7 +86,7 @@ static func _relocate(world: World, unit_id: int, dest: int) -> void:
 		if _first_empty_bench(world) == -1:
 			return                                  # bench full
 		_detach(world, unit)
-		_place_on_bench(world, unit)
+		_place_on_bench(world, unit, events)
 		return
 	if dest < 0 or dest >= BoardGrid.tile_count():
 		return
@@ -93,30 +96,33 @@ static func _relocate(world: World, unit_id: int, dest: int) -> void:
 	var occupant := _tile_occupant(world, dest)
 	if occupant == null:
 		_detach(world, unit)
-		_place_on_tile(world, unit, dest)
+		_place_on_tile(world, unit, dest, events)
 		return
 	# Swap. Detaching the mover first frees its bench slot, so a bench-bound occupant
 	# always has room; a tile<->tile swap just trades the two tiles.
 	_detach(world, unit)
 	_detach(world, occupant)
 	if origin == -1:
-		_place_on_bench(world, occupant)
+		_place_on_bench(world, occupant, events)
 	else:
-		_place_on_tile(world, occupant, origin)
-	_place_on_tile(world, unit, dest)
+		_place_on_tile(world, occupant, origin, events)
+	_place_on_tile(world, unit, dest, events)
 
-static func _place_on_tile(world: World, unit: Unit, tile: int) -> void:
+static func _place_on_tile(world: World, unit: Unit, tile: int, events: Array[SimEvent]) -> void:
 	unit.tile = tile
 	unit.pos = BoardGrid.tile_center(tile)
 	unit.coverage = Path.coverage_intervals(unit.pos, unit.stats.attack_range)
 	unit.buckets = Path.buckets_for_intervals(unit.coverage)
 	unit.target_enemy_id = 0
 	world.insert_unit_sorted(unit)
+	events.append(UnitMoved.new(unit.id, tile, -1))
 
 # Put a detached unit on the first empty bench slot; the caller guarantees a slot.
-static func _place_on_bench(world: World, unit: Unit) -> void:
+static func _place_on_bench(world: World, unit: Unit, events: Array[SimEvent]) -> void:
 	_clear_placement(unit)
-	world.bench[_first_empty_bench(world)] = unit
+	var slot := _first_empty_bench(world)
+	world.bench[slot] = unit
+	events.append(UnitMoved.new(unit.id, -1, slot))
 
 # --- helpers ---
 
