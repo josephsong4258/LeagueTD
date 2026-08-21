@@ -40,6 +40,7 @@ func _initialize() -> void:
 	_test_commands()
 	_test_win_loss()
 	_test_full_game()
+	_test_serialization()
 	_test_determinism()
 	if _failures == 0:
 		print("ALL PASS")
@@ -59,40 +60,37 @@ func _approx(a: float, b: float, eps: float = 0.001) -> bool:
 	return absf(a - b) <= eps
 
 func _test_pos_to_xy() -> void:
-	print("- Path.pos_to_xy (hexagon ring)")
-	var r := Path.circumradius()
-	var a := Path.apothem()
-	# Six equal sides of length r; vertex i sits at perimeter distance i*r. Positions
+	print("- Path.pos_to_xy (rectangle loop)")
+	var h := Path.half_extent()
+	var perim := Path.perimeter()
+	# Four sides; the top runs [0, 2h.x], the right [2h.x, 2h.x+2h.y], etc. Positions
 	# carry a little accumulated-float error along the ring, so compare within 0.5px.
-	_check(_approx(Path.perimeter(), 6.0 * r, 0.5), "perimeter is six equal sides")
-	_check(Path.pos_to_xy(0.0).distance_to(Vector2(r, 0.0)) < 0.5, "origin (right vertex)")
-	_check(Path.pos_to_xy(3.0 * r).distance_to(Vector2(-r, 0.0)) < 0.5, "half a lap is the opposite vertex")
-	# The top edge runs between vertices 4 and 5; its mid-span is straight above center.
-	_check(Path.pos_to_xy(4.5 * r).distance_to(Vector2(0.0, -a)) < 0.5, "mid top edge")
-	_check(Path.pos_to_xy(Path.perimeter()).distance_to(Vector2(r, 0.0)) < 0.5, "full lap wraps to origin")
+	_check(_approx(perim, 4.0 * (h.x + h.y), 0.5), "perimeter is the four-sided loop")
+	_check(Path.pos_to_xy(0.0).distance_to(Vector2(-h.x, -h.y)) < 0.5, "origin (top-left corner)")
+	_check(Path.pos_to_xy(h.x).distance_to(Vector2(0.0, -h.y)) < 0.5, "mid top edge")
+	_check(Path.pos_to_xy(perim * 0.5).distance_to(Vector2(h.x, h.y)) < 0.5, "half a lap is the opposite corner")
+	_check(Path.pos_to_xy(perim).distance_to(Vector2(-h.x, -h.y)) < 0.5, "full lap wraps to origin")
 
 func _test_nearest_pos() -> void:
 	print("- Path.nearest_pos")
 	var perim := Path.perimeter()
-	var r := Path.circumradius()
-	var a := Path.apothem()
-	for d: float in [0.0, 0.7 * r, 3.0 * r, 4.5 * r, perim * 0.5, perim * 0.9]:
+	var h := Path.half_extent()
+	for d: float in [0.0, 0.7 * h.x, perim * 0.25, perim * 0.5, perim * 0.5 + 0.7 * h.y, perim * 0.9]:
 		var xy := Path.pos_to_xy(d)
 		var back := Path.nearest_pos(xy)
 		var same := _approx(fposmod(back, perim), fposmod(d, perim), 0.5)
 		_check(same, "roundtrip d=%.1f" % d)
-	# A point above the top edge projects straight down onto its mid-span (d = 4.5r).
-	_check(_approx(Path.nearest_pos(Vector2(0.0, -a - 100.0)), 4.5 * r, 0.5),
+	# A point above the top edge projects straight down onto its mid-span (d = h.x).
+	_check(_approx(Path.nearest_pos(Vector2(0.0, -h.y - 100.0)), h.x, 0.5),
 		"point above top edge projects straight down")
 
 func _test_coverage_and_buckets() -> void:
 	print("- Path.coverage_intervals / buckets")
-	var r := Path.circumradius()
-	var a := Path.apothem()
-	var mid := 4.5 * r                          # perimeter distance of the mid top edge
+	var h := Path.half_extent()
+	var mid := h.x                              # perimeter distance of the mid top edge
 	# Unit just inside the top edge, mid-span: a symmetric arc around its projection.
 	var perp := 60.0
-	var center := Vector2(0.0, -a + perp)
+	var center := Vector2(0.0, -h.y + perp)
 	var radius := 100.0
 	var intervals := Path.coverage_intervals(center, radius)
 	_check(intervals.size() == 1, "one interval on the top edge")
@@ -103,15 +101,16 @@ func _test_coverage_and_buckets() -> void:
 	# Sitting at the arena center, the track is far on every side -> no coverage.
 	_check(Path.coverage_intervals(Vector2.ZERO, 50.0).is_empty(),
 		"no coverage when the track is out of range")
-	# Near a vertex (here vertex 5, at d = 5r) the two edges meeting there are
-	# contiguous in perimeter space, so coverage spanning the vertex is one interval.
-	var vertex5 := Vector2(0.5 * r, -a)
-	var corner := Path.coverage_intervals(vertex5 * 0.8, 170.0)
+	# Near the top-right corner (d = 2h.x) the top and right edges meeting there are
+	# contiguous in perimeter space, so coverage spanning the corner is one interval.
+	var corner_d := 2.0 * h.x
+	var near_corner := Vector2(h.x, -h.y) * 0.85
+	var corner := Path.coverage_intervals(near_corner, 170.0)
 	var spans := false
 	for iv in corner:
-		if iv.x < 5.0 * r and iv.y > 5.0 * r:
+		if iv.x < corner_d and iv.y > corner_d:
 			spans = true
-	_check(spans, "coverage merges across a vertex into one interval")
+	_check(spans, "coverage merges across a corner into one interval")
 	# Buckets touched by the top-edge coverage are all in range.
 	var buckets := Path.buckets_for_intervals(intervals)
 	_check(buckets.size() >= 1, "coverage touches at least one bucket")
@@ -176,18 +175,18 @@ func _deploy_unit(world: World, unit_pos: Vector2, damage: float, attack_speed: 
 	return unit
 
 func _test_board_grid() -> void:
-	print("- BoardGrid (hex grid filling the stadium)")
+	print("- BoardGrid (square grid inside the loop)")
 	var count := BoardGrid.tile_count()
 	print("    tile_count = %d" % count)
-	_check(count > 40 and count < 200, "reasonable tile count (%d)" % count)
-	# Every tile center sits clear of the path band (inside the stadium inset by the
-	# band half-width). point_inside is the exact stadium test the grid builds from.
+	_check(count == Path.COLS * Path.ROWS, "tile count = COLS*ROWS (%d)" % count)
+	# Every tile center sits clear of the path band (inside the loop inset by the band
+	# half-width). point_inside is the exact rectangle test the grid builds from.
 	var band := Path.TRACK_WIDTH * 0.5
 	var all_clear := true
 	for i in count:
 		if not Path.point_inside(BoardGrid.tile_center(i), band):
 			all_clear = false
-	_check(all_clear, "every tile center is inside the arena and clear of the path band")
+	_check(all_clear, "every tile center is inside the loop and clear of the path band")
 	# No two tile centers coincide.
 	var unique := true
 	for i in count:
@@ -195,7 +194,7 @@ func _test_board_grid() -> void:
 			if BoardGrid.tile_center(i).distance_to(BoardGrid.tile_center(j)) < 1.0:
 				unique = false
 	_check(unique, "no duplicate tile centers")
-	# Symmetric fill: a stadium is symmetric about both axes, so every tile's mirror
+	# Symmetric fill: the grid is symmetric about both axes, so every tile's mirror
 	# across the vertical axis must also be a tile.
 	var has_mirror := true
 	for i in count:
@@ -211,9 +210,9 @@ func _test_board_grid() -> void:
 		_check(BoardGrid.nearest_tile(BoardGrid.tile_center(mid)) == mid, "nearest_tile finds an exact center")
 	# Cached: two calls return the same list length.
 	_check(BoardGrid.tiles().size() == count, "tiles() is stable across calls")
-	# Hex hit-test: center is inside, the neighbouring cell's center is not.
-	_check(BoardGrid.point_in_tile(Vector2.ZERO), "hex contains its center")
-	_check(not BoardGrid.point_in_tile(Vector2(sqrt(3.0) * BoardGrid.hex_size(), 0.0)), "hex excludes the next cell's center")
+	# Square hit-test: center is inside, the neighbouring cell's center is not.
+	_check(BoardGrid.point_in_tile(Vector2.ZERO), "tile contains its center")
+	_check(not BoardGrid.point_in_tile(Vector2(BoardGrid.tile_size(), 0.0)), "tile excludes the next cell's center")
 
 func _test_content_loader() -> void:
 	print("- ContentLoader (parse + validate content/*.json)")
@@ -342,9 +341,9 @@ func _test_buckets() -> void:
 func _test_targeting() -> void:
 	print("- Targeting.run (first / furthest-along policy)")
 	var world := Sim.new_world(1, Content.new())
-	var mid := 4.5 * Path.circumradius()                             # mid top edge
+	var mid := Path.half_extent().x                                  # mid top edge
 	# Unit just inside the top edge at mid-span, range 100 -> a ~150-wide arc.
-	var unit := _deploy_unit(world, Vector2(0.0, -Path.apothem() + 60.0), 5.0, 1.0, 100.0, 400.0, 0)
+	var unit := _deploy_unit(world, Vector2(0.0, -Path.half_extent().y + 60.0), 5.0, 1.0, 100.0, 400.0, 0)
 	var in_near := _spawn_enemy(world, mid - 40.0, 10.0)
 	var in_far := _spawn_enemy(world, mid + 40.0, 10.0)              # further along
 	var out := _spawn_enemy(world, mid + 400.0, 10.0)               # out of range
@@ -367,8 +366,8 @@ func _test_combat_loop() -> void:
 	var world := Sim.new_world(1, Content.new())
 	# One shot per tick (attack_speed 30 at 30 Hz), fast projectile so it hits the
 	# same tick it is fired. Enemy is stationary and takes two 5-damage hits.
-	_deploy_unit(world, Vector2(0.0, -Path.apothem() + 60.0), 5.0, 30.0, 100.0, 4000.0, 0)
-	var enemy := _spawn_enemy(world, 4.5 * Path.circumradius(), 10.0, 0.0)
+	_deploy_unit(world, Vector2(0.0, -Path.half_extent().y + 60.0), 5.0, 30.0, 100.0, 4000.0, 0)
+	var enemy := _spawn_enemy(world, Path.half_extent().x, 10.0, 0.0)
 	var enemy_id := enemy.id
 	var no_commands: Array[Command] = []
 	var fired := 0
@@ -614,6 +613,58 @@ func _test_full_game() -> void:
 	print("    %s at tick %d — wave %d, gold %d, deployed %d, purchased %d" % [
 		("WIN" if world.won else "LOSS"), world.tick, world.wave,
 		world.gold, world.units.size(), world.units_purchased])
+
+func _test_serialization() -> void:
+	print("- save / replay (World round-trip + command-log replay)")
+	var content := ContentLoader.load_default()
+	var seed_value := 4242
+	var world := Sim.new_world(seed_value, content)
+	var bot := Bot.new()
+	# Run a bounded scripted game, capturing each command against the tick it was ingested.
+	var log: Array = []
+	while world.tick < 4000 and world.phase != World.Phase.OVER:
+		var cmds := bot.decide(world, content)
+		for c in cmds:
+			log.append({"tick": world.tick, "cmd": c})
+		Sim.step(world, cmds, content)
+	_check(world.units_purchased > 0 and not log.is_empty(),
+		"captured a non-trivial command log (%d cmds over %d ticks)" % [log.size(), world.tick])
+	var snapshot := JSON.stringify(world.to_dict())
+
+	# clone() is an exact deep copy (same data path as a save).
+	_check(JSON.stringify(world.clone().to_dict()) == snapshot, "clone() round-trips World exactly")
+
+	# The full save survives a JSON string round-trip.
+	var text := SaveGame.to_json(world, log, "test-hash")
+	var parsed := SaveGame.parse(text)
+	_check(not parsed.is_empty(), "save JSON parses")
+	_check(parsed.get("content_hash", "") == "test-hash", "content_hash round-trips")
+	_check(JSON.stringify((parsed["world"] as World).to_dict()) == snapshot, "world survives JSON round-trip")
+	_check((parsed["command_log"] as Array).size() == log.size(), "command log survives round-trip")
+
+	# Corrupt / stale saves are rejected cleanly so the host can fall back to a fresh run.
+	_check(SaveGame.parse("not json {").is_empty(), "malformed save is rejected")
+	_check(SaveGame.parse('{"version":999,"world":{}}').is_empty(), "version mismatch is rejected")
+
+	# The core §10 guarantee: seed + command log replays to the identical world.
+	var replay := Sim.new_world(seed_value, content)
+	var li := 0
+	while replay.tick < world.tick:
+		var tick_cmds: Array[Command] = []
+		while li < log.size() and int(log[li]["tick"]) == replay.tick:
+			tick_cmds.append(log[li]["cmd"])
+			li += 1
+		Sim.step(replay, tick_cmds, content)
+	_check(JSON.stringify(replay.to_dict()) == snapshot, "seed + command log replays to the same world")
+
+	# A resumed snapshot ticks identically to never having saved (fast-resume correctness).
+	var resumed := world.clone()
+	var no_cmds: Array[Command] = []
+	for i in 300:
+		Sim.step(resumed, no_cmds, content)
+		Sim.step(world, no_cmds, content)
+	_check(JSON.stringify(resumed.to_dict()) == JSON.stringify(world.to_dict()),
+		"a resumed snapshot ticks identically to the live world")
 
 func _test_determinism() -> void:
 	print("- determinism")

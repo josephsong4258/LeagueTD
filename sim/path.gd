@@ -1,27 +1,21 @@
 class_name Path
 extends RefCounted
 
-# The entire map is one function (ARCHITECTURE.md §6). The arena is a HEXAGON: a
-# six-sided loop filled by a hexagonal cluster of hex tiles. A hexagonal boundary is
-# the shape a hex grid tiles with NO gaps — every edge runs along hex edges and every
-# one of the six corners is a full tile — which a rectangle/stadium can't do (hex
-# angles are 120deg, so they leave dead triangles at rectangular corners, worst of all
-# at the corners themselves, which are premium placement spots). An enemy's position
-# is a single float `d` in [0, perimeter()), distance clockwise from the right vertex.
+# The entire map is one function (ARCHITECTURE.md §6). The arena is a RECTANGLE: a
+# four-sided loop wrapping a square grid of tiles (BoardGrid). The board is square, so
+# the loop is square too — all four sides equal, so each of the four corners sits at an
+# exact quarter of the perimeter, which is what `spawn_corner` (0..3) indexes. An enemy's
+# position is a single float `d` in [0, perimeter()), distance CLOCKWISE from the
+# top-left corner (d = 0). The renderer maps this flat sim space to an isometric screen.
 #
-# The arena is a FLAT-TOP hexagon (a vertex at left and right), so it is a little
-# wider than tall. Its tiles are POINTY-TOP hexes (BoardGrid); a pointy-top cluster
-# packs into a flat-top hexagonal outline. The ring is six exact straight segments —
-# no chord approximation — centered on the origin. The renderer maps sim space to
-# screen.
-#
-# These are structural constants (geometry + data-structure sizing), not balance
-# numbers, so they live here rather than in content JSON. The tile size and ring count
-# also drive BoardGrid, and the arena is sized from them so the track hugs the cluster.
+# These are structural constants (grid + geometry + data-structure sizing), not balance
+# numbers, so they live here rather than in content JSON. Tile size and grid dimensions
+# also drive BoardGrid, and the loop is sized from them so the track hugs the tiles.
 
-const CELL_SIZE: float = 42.0             # pointy-top tile radius (center to corner); BoardGrid uses this
-const RINGS: int = 5                      # tile-cluster radius; tile count = 1 + 3*RINGS*(RINGS+1)
-const TILE_GAP: float = 6.0               # clearance between the outer tiles and the path band
+const COLS: int = 8                       # placement grid width in tiles; BoardGrid reads it
+const ROWS: int = 8                       # placement grid height in tiles
+const TILE_SIZE: float = 60.0             # square tile pitch (sim space); BoardGrid uses this
+const TILE_GAP: float = 10.0              # clearance between the outer tiles and the path band
 const TRACK_WIDTH: float = 76.0           # the path is a terrain band, TRACK_WIDTH/2 to either side
 const BUCKET_COUNT: int = 64
 
@@ -30,15 +24,13 @@ static var _ring: PackedVector2Array = PackedVector2Array()
 static var _cum: PackedFloat32Array = PackedFloat32Array()   # _cum[i] = arc length ring[0]..ring[i]
 static var _perim: float = -1.0
 
-# Circumradius of the arena hexagon: reach past the cluster's corner tiles far enough
-# for the band (TRACK_WIDTH/2) plus the tile gap to clear their outer corners. A
-# pointy-top corner tile on the horizontal axis reaches sqrt(3)*CELL_SIZE*(RINGS+0.5).
-static func circumradius() -> float:
-	return sqrt(3.0) * CELL_SIZE * (float(RINGS) + 0.5) + TILE_GAP + TRACK_WIDTH * 0.5
-
-# Center-to-side distance of the arena hexagon (its flat top/bottom edges sit here).
-static func apothem() -> float:
-	return circumradius() * sqrt(3.0) * 0.5
+# Half-width/half-height of the centerline rectangle (the track's centerline): reach past
+# the grid's outer tile edges by the tile gap plus half the band, so the terrain clears
+# the tiles. The grid spans COLS*TILE_SIZE wide and ROWS*TILE_SIZE tall, centered on 0.
+static func half_extent() -> Vector2:
+	return Vector2(
+		float(COLS) * TILE_SIZE * 0.5 + TILE_GAP + TRACK_WIDTH * 0.5,
+		float(ROWS) * TILE_SIZE * 0.5 + TILE_GAP + TRACK_WIDTH * 0.5)
 
 static func _ensure() -> void:
 	if _perim >= 0.0:
@@ -52,16 +44,17 @@ static func _ensure() -> void:
 		acc += _ring[i].distance_to(_ring[(i + 1) % n])
 	_perim = acc
 
-# Flat-top hexagon: six vertices at 0, 60, ... 300 degrees. Vertex 0 (d = 0) is the
-# right point; increasing angle is clockwise on screen (y is down), matching enemy
-# travel. Sides are exact straight segments of length CELL-driven circumradius.
+# Rectangle: four corners, clockwise from the top-left. Corner 0 (d = 0) is top-left;
+# increasing d is clockwise on screen (y is down), matching enemy travel. Because the
+# board is square the four sides are equal, so corner c sits at c/4 of the perimeter.
 static func _build_ring() -> PackedVector2Array:
-	var r := circumradius()
-	var pts := PackedVector2Array()
-	for i in 6:
-		var a := deg_to_rad(60.0 * float(i))
-		pts.append(r * Vector2(cos(a), sin(a)))
-	return pts
+	var h := half_extent()
+	return PackedVector2Array([
+		Vector2(-h.x, -h.y),   # top-left
+		Vector2(h.x, -h.y),    # top-right
+		Vector2(h.x, h.y),     # bottom-right
+		Vector2(-h.x, h.y),    # bottom-left
+	])
 
 static func perimeter() -> float:
 	_ensure()
@@ -75,36 +68,17 @@ static func ring() -> PackedVector2Array:
 	_ensure()
 	return _ring
 
-# The arena hexagon shrunk inward by `margin` (a smaller concentric hexagon). The
-# renderer clips boundary tiles to inset_ring(TRACK_WIDTH/2) so the tile field fills
-# exactly to the band's inner edge with no gap, straightening the cluster's sawtooth
-# outer edge against the track.
-static func inset_ring(margin: float) -> PackedVector2Array:
-	var r := (apothem() - margin) / (sqrt(3.0) * 0.5)
-	var pts := PackedVector2Array()
-	for i in 6:
-		var a := deg_to_rad(60.0 * float(i))
-		pts.append(r * Vector2(cos(a), sin(a)))
-	return pts
-
 # Axis-aligned bounding box of the centerline, for layout/fit. The band overhangs it
 # by TRACK_WIDTH/2; the caller adds that if it needs the terrain's outer extent.
 static func bounds() -> Rect2:
-	var r := circumradius()
-	var a := apothem()
-	return Rect2(-r, -a, 2.0 * r, 2.0 * a)
+	var h := half_extent()
+	return Rect2(-h, h * 2.0)
 
-# Is `p` inside the hexagon shrunk inward by `margin`? The inset of a regular hexagon
-# is a smaller one with the apothem reduced by margin. BoardGrid uses this to keep
-# tiles clear of the path band. Three side-normal constraints (at 90/30/150 degrees)
-# collapse to two tests using |x|,|y|.
+# Is `p` inside the rectangle shrunk inward by `margin`? BoardGrid uses this to keep
+# tiles clear of the path band.
 static func point_inside(p: Vector2, margin: float) -> bool:
-	var apo := apothem() - margin
-	if apo <= 0.0:
-		return false
-	var qx := absf(p.x)
-	var qy := absf(p.y)
-	return qy <= apo and 0.8660254 * qx + 0.5 * qy <= apo
+	var h := half_extent()
+	return absf(p.x) <= h.x - margin and absf(p.y) <= h.y - margin
 
 static func pos_to_xy(d: float) -> Vector2:
 	_ensure()
@@ -142,7 +116,7 @@ static func nearest_pos(p: Vector2) -> float:
 # `radius` covers. For perpendicular distance `perp` from a segment, the covered
 # chord half-length is sqrt(radius^2 - perp^2) when radius > perp, and nothing
 # otherwise (§6). Returns merged [start, end] intervals in perimeter space; coverage
-# spanning a vertex merges into one interval. A wrap across the origin is left as two
+# spanning a corner merges into one interval. A wrap across the origin is left as two
 # intervals, which targeting tests independently.
 static func coverage_intervals(center: Vector2, radius: float) -> Array[Vector2]:
 	_ensure()
@@ -194,7 +168,7 @@ static func buckets_for_intervals(intervals: Array[Vector2]) -> PackedInt32Array
 # --- helpers ---
 
 # Sub-pixel: merge intervals that touch within half a unit, so coverage spanning a
-# vertex reads as one interval and no hairline seam lets an enemy slip through.
+# corner reads as one interval and no hairline seam lets an enemy slip through.
 const _MERGE_EPS := 0.5
 
 static func _merge_intervals(raw: Array[Vector2]) -> Array[Vector2]:
